@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>InsightMint Summary</title>
+    <style>
+      body { font-family: sans-serif; margin: 10px; }
+      .header { font-weight: bold; margin-bottom: 8px; }
+      .summary { white-space: pre-wrap; overflow-y: auto; max-height: 220px; }
+      .close { position: absolute; top: 5px; right: 10px; cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <div class="close" onclick="window.close()">✕</div>
+    <div class="header" id="file-name">File</div>
+    <div class="summary" id="summary-text">Waiting for document...</div>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>

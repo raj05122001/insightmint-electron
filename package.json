@@ -1,0 +1,39 @@
+{
+  "name": "insightmint-electron",
+  "version": "1.0.0",
+  "description": "InsightMint desktop agent: auto-summarize Word & PDF files on open",
+  "author": "Your Name insightmint.ultimeet.io",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "dependencies": {
+    "chokidar": "^3.5.3",
+    "electron-store": "^8.1.0",
+    "mammoth": "^1.4.17",
+    "pdf-parse": "^1.1.1",
+    "axios": "^1.4.0"
+  },
+  "devDependencies": {
+    "electron": "^26.0.0",
+    "electron-builder": "^23.6.0"
+  },
+"build": {
+  "appId": "com.insightmint.app",
+  "productName": "InsightMint",
+  "icon": "assets/icon",         
+  "files": ["**/*"],
+  "mac": {
+    "icon": "assets/icon.icns"
+  },
+  "win": {
+    "icon": "assets/icon.ico",
+    "target": "nsis"
+  },
+  "linux": {
+    "icon": "assets/icon.png"
+  }
+}
+}
