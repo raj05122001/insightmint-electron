@@ -2,8 +2,6 @@ const { app, BrowserWindow, Tray, Menu, ipcMain, dialog } = require('electron');
 const path = require('path');
 const chokidar = require('chokidar');
 const fs = require('fs');
-const pdf = require('pdf-parse');
-const mammoth = require('mammoth');
 const axios = require('axios');
 
 let tray = null;
@@ -61,8 +59,8 @@ async function openFileDialog() {
 // 2️⃣ Create a hidden summary window
 function createSummaryWindow() {
   summaryWindow = new BrowserWindow({
-    width: 400,
-    height: 300,
+    width: 450,
+    height: 350,
     show: false,
     frame: false,
     alwaysOnTop: true,
@@ -72,7 +70,13 @@ function createSummaryWindow() {
       enableRemoteModule: false
     }
   });
+  
   summaryWindow.loadFile(path.join(__dirname, 'renderer/index.html'));
+  
+  // Handle window closed event
+  summaryWindow.on('closed', () => {
+    console.log('Summary window closed');
+  });
 }
 
 // 3️⃣ Watcher setup (Documents folder के लिए) with better error handling
@@ -128,7 +132,35 @@ function setupWatcher() {
   }
 }
 
-// 4️⃣ Process file function with better error handling
+// Helper function to safely send to renderer
+function safelySendToRenderer(channel, data) {
+  try {
+    if (summaryWindow && !summaryWindow.isDestroyed() && summaryWindow.webContents) {
+      summaryWindow.webContents.send(channel, data);
+      return true;
+    }
+  } catch (error) {
+    console.error('Error sending to renderer:', error.message);
+    return false;
+  }
+  return false;
+}
+
+// Helper function to safely show window
+function safelyShowWindow() {
+  try {
+    if (summaryWindow && !summaryWindow.isDestroyed()) {
+      summaryWindow.show();
+      return true;
+    }
+  } catch (error) {
+    console.error('Error showing window:', error.message);
+    return false;
+  }
+  return false;
+}
+
+// 4️⃣ Process file function - Send file as Base64 with better error handling
 async function processFile(filePath) {
   const ext = path.extname(filePath).toLowerCase();
   if (!SUPPORTED.includes(ext)) return;
@@ -136,86 +168,122 @@ async function processFile(filePath) {
   console.log(`Processing file: ${filePath}`);
   
   try {
-    let text = '';
-    
     // Check if file exists and is readable
     if (!fs.existsSync(filePath)) {
       console.error('File does not exist:', filePath);
       return;
     }
 
-    const data = fs.readFileSync(filePath);
-
-    if (ext === '.pdf') {
-      const pdfData = await pdf(data);
-      text = pdfData.text;
-    }
-    else if (ext === '.docx') {
-      const { value } = await mammoth.extractRawText({ buffer: data });
-      text = value;
-    }
-
-    console.log(`Extracted ${text.length} characters from ${path.basename(filePath)}`);
-
-    if (text.trim().length === 0) {
-      showError('No text found in the document');
+    // Check file size (limit to 25MB for base64 encoding)
+    const stats = fs.statSync(filePath);
+    const fileSizeMB = stats.size / (1024 * 1024);
+    console.log(`File size: ${fileSizeMB.toFixed(2)} MB`);
+    
+    if (fileSizeMB > 25) {
+      showError(`File too large: ${fileSizeMB.toFixed(1)}MB. Maximum size is 25MB.`);
       return;
     }
 
-    // API call के लिए try-catch
+    // Read file as base64
+    console.log('Reading file...');
+    const fileBuffer = fs.readFileSync(filePath);
+    const base64Data = fileBuffer.toString('base64');
+    const fileName = path.basename(filePath);
+
+    console.log(`Sending file ${fileName} to API server...`);
+    console.log(`Base64 data length: ${base64Data.length} characters`);
+
+    // API call to send file data
     let summary;
     try {
-      const response = await axios.post('http://127.0.0.1:8000/summarize', 
-        { text }, 
-        { timeout: 30000 }
+      const response = await axios.post('http://127.0.0.1:8000/summarize-file-base64', 
+        { 
+          fileData: base64Data,
+          fileName: fileName,
+          fileType: ext
+        }, 
+        { 
+          timeout: 60000,
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        }
       );
+      
+      console.log('✅ API Response received');
+      console.log('Response status:', response.status);
+      console.log('Response data:', response.data);
+      
       summary = response.data.summary;
+      console.log('Summary received from API server');
+      
     } catch (apiError) {
-      console.error('API Error:', apiError.message);
-      // Fallback: Simple text truncation
-      summary = createSimpleSummary(text);
+      console.error('❌ API Error Details:');
+      console.error('Status:', apiError.response?.status);
+      console.error('Status Text:', apiError.response?.statusText);
+      console.error('Error Data:', apiError.response?.data);
+      console.error('Error Message:', apiError.message);
+      
+      if (apiError.response?.data?.error) {
+        summary = `❌ API Error: ${apiError.response.data.error}`;
+      } else {
+        summary = `❌ Connection Error: ${apiError.message}\n\nPlease check if the API server is running.`;
+      }
     }
 
-    // 5️⃣ Show in UI
-    summaryWindow.webContents.send('show-summary', { 
-      file: path.basename(filePath), 
+    // 5️⃣ Show in UI with safety checks
+    const sent = safelySendToRenderer('show-summary', { 
+      file: fileName, 
       summary 
     });
-    summaryWindow.show();
     
-    // Auto-hide after 10 seconds
-    setTimeout(() => {
-      if (summaryWindow && summaryWindow.isVisible()) {
-        summaryWindow.hide();
-      }
-    }, 10000);
+    if (sent) {
+      safelyShowWindow();
+      
+      // Auto-hide after 15 seconds (increased from 10)
+      setTimeout(() => {
+        try {
+          if (summaryWindow && !summaryWindow.isDestroyed() && summaryWindow.isVisible()) {
+            summaryWindow.hide();
+          }
+        } catch (error) {
+          console.warn('Error auto-hiding window:', error.message);
+        }
+      }, 15000);
+    } else {
+      console.error('Failed to send summary to renderer');
+    }
 
   } catch (err) {
-    console.error('Error processing', filePath, err);
+    console.error('❌ Error processing file:', filePath);
+    console.error('Error details:', err.message);
+    console.error('Stack:', err.stack);
     showError(`Error processing file: ${err.message}`);
   }
 }
 
-// Simple summary fallback
-function createSimpleSummary(text) {
-  const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 10);
-  const firstFew = sentences.slice(0, 3).join('. ');
-  return firstFew.length > 200 ? firstFew.substring(0, 200) + '...' : firstFew;
-}
-
-// Error notification
+// Error notification with safety checks
 function showError(message) {
-  summaryWindow.webContents.send('show-summary', { 
-    file: 'Error', 
+  console.error('Showing error:', message);
+  
+  const sent = safelySendToRenderer('show-summary', { 
+    file: '⚠️ Error', 
     summary: message 
   });
-  summaryWindow.show();
   
-  setTimeout(() => {
-    if (summaryWindow && summaryWindow.isVisible()) {
-      summaryWindow.hide();
-    }
-  }, 5000);
+  if (sent) {
+    safelyShowWindow();
+    
+    setTimeout(() => {
+      try {
+        if (summaryWindow && !summaryWindow.isDestroyed() && summaryWindow.isVisible()) {
+          summaryWindow.hide();
+        }
+      } catch (error) {
+        console.warn('Error auto-hiding error window:', error.message);
+      }
+    }, 8000);
+  }
 }
 
 // 6️⃣ App lifecycle
@@ -242,15 +310,33 @@ app.whenReady().then(() => {
   });
 });
 
-// Global error handlers to prevent crashes
+// Enhanced global error handlers
 process.on('unhandledRejection', (reason, promise) => {
-  console.warn('Unhandled Promise Rejection (ignoring):', reason?.message || reason);
-  // Don't crash the app
+  console.warn('⚠️ Unhandled Promise Rejection:');
+  console.warn('Reason:', reason?.message || reason);
+  console.warn('Promise:', promise);
+  // Don't crash the app, but log details
 });
 
 process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error.message);
-  // Don't crash the app for minor errors
+  console.error('🚨 Uncaught Exception:');
+  console.error('Message:', error.message);
+  console.error('Stack:', error.stack);
+  
+  // Try to show error if possible
+  try {
+    if (summaryWindow && !summaryWindow.isDestroyed()) {
+      showError(`Application Error: ${error.message}`);
+    }
+  } catch (e) {
+    console.error('Could not show error in UI');
+  }
+  
+  // Don't crash for minor errors
+  if (!error.message.includes('Object has been destroyed')) {
+    console.error('Fatal error, exiting...');
+    process.exit(1);
+  }
 });
 
 // Second instance prevention
