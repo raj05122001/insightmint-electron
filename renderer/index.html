@@ -1,20 +1,362 @@
 <!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="UTF-8" />
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>InsightMint Summary</title>
     <style>
-      body { font-family: sans-serif; margin: 10px; }
-      .header { font-weight: bold; margin-bottom: 8px; }
-      .summary { white-space: pre-wrap; overflow-y: auto; max-height: 220px; }
-      .close { position: absolute; top: 5px; right: 10px; cursor: pointer; }
-    </style>
-  </head>
-  <body>
-    <div class="close" onclick="window.close()">✕</div>
-    <div class="header" id="file-name">File</div>
-    <div class="summary" id="summary-text">Waiting for document...</div>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
 
-    <script src="./renderer.js"></script>
-  </body>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(20px);
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            height: 100vh;
+            overflow: hidden;
+            user-select: none;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 16px;
+            border-radius: 12px 12px 0 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            cursor: move;
+            -webkit-app-region: drag;
+        }
+
+        .header h1 {
+            font-size: 14px;
+            font-weight: 600;
+            margin: 0;
+        }
+
+        .close-btn {
+            background: rgba(255, 255, 255, 0.2);
+            border: none;
+            color: white;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 12px;
+            -webkit-app-region: no-drag;
+            transition: background 0.2s;
+        }
+
+        .close-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        .content {
+            padding: 20px;
+            height: calc(100vh - 48px);
+            overflow-y: auto;
+        }
+
+        .file-info {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 16px;
+            border-left: 4px solid #667eea;
+        }
+
+        .file-name {
+            font-weight: 600;
+            color: #2d3748;
+            margin-bottom: 4px;
+            word-break: break-word;
+        }
+
+        .file-meta {
+            font-size: 12px;
+            color: #718096;
+        }
+
+        .summary {
+            background: white;
+            border-radius: 8px;
+            padding: 16px;
+            border: 1px solid #e2e8f0;
+            line-height: 1.6;
+            color: #2d3748;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .processing {
+            text-align: center;
+            color: #667eea;
+            font-style: italic;
+        }
+
+        .error {
+            background: #fed7d7;
+            border-color: #fc8181;
+            color: #c53030;
+        }
+
+        .success {
+            border-left-color: #48bb78;
+        }
+
+        .notification {
+            background: #bee3f8;
+            border-color: #4299e1;
+            color: #2b6cb0;
+        }
+
+        .actions {
+            margin-top: 16px;
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+        }
+
+        .btn {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 6px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+            font-weight: 600;
+        }
+
+        .btn-primary:hover {
+            background: #5a67d8;
+            transform: translateY(-1px);
+        }
+
+        .btn-secondary {
+            background: #e2e8f0;
+            color: #4a5568;
+        }
+
+        .btn-secondary:hover {
+            background: #cbd5e0;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #e2e8f0;
+            border-radius: 50%;
+            border-top-color: #667eea;
+            animation: spin 1s ease-in-out infinite;
+            margin-right: 8px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Scrollbar styling */
+        .content::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .content::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 3px;
+        }
+
+        .content::-webkit-scrollbar-thumb {
+            background: #c1c1c1;
+            border-radius: 3px;
+        }
+
+        .content::-webkit-scrollbar-thumb:hover {
+            background: #a8a8a8;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📄 InsightMint</h1>
+        <button class="close-btn" onclick="window.close()" title="Close">×</button>
+    </div>
+    
+    <div class="content">
+        <div class="file-info" id="fileInfo">
+            <div class="file-name" id="fileName">Waiting for document...</div>
+            <div class="file-meta" id="fileMeta">Ready to process</div>
+        </div>
+        
+        <div class="summary" id="summary">
+            Welcome to InsightMint! 
+            
+            Open any PDF or Word document to get an instant AI summary. Use the buttons below to manually open files when ready.
+            
+            Your documents are processed locally and securely.
+        </div>
+        
+        <div class="actions" id="actions" style="display: none;">
+            <button class="btn btn-secondary" onclick="copyToClipboard()">📋 Copy</button>
+            <button class="btn btn-secondary" onclick="openFileLocation()" id="openLocationBtn">📂 Location</button>
+            <button class="btn btn-primary" onclick="openFileDefault()" id="openFileBtn">📄 Open File</button>
+            <button class="btn btn-secondary" onclick="window.close()">✓ Done</button>
+        </div>
+    </div>
+
+    <script>
+        let currentFilePath = '';
+        let currentSummary = '';
+
+        // Listen for summary data from main process
+        window.electronAPI.onShowSummary((event, data) => {
+            updateSummaryDisplay(data);
+        });
+
+        function updateSummaryDisplay(data) {
+            const fileInfo = document.getElementById('fileInfo');
+            const fileName = document.getElementById('fileName');
+            const fileMeta = document.getElementById('fileMeta');
+            const summary = document.getElementById('summary');
+            const actions = document.getElementById('actions');
+
+            // Update file info
+            fileName.textContent = data.file || 'Unknown Document';
+            
+            // Set file metadata
+            let metaText = '';
+            if (data.fileSize) {
+                metaText += `Size: ${data.fileSize}`;
+            }
+            if (data.filePath) {
+                currentFilePath = data.filePath;
+                metaText += metaText ? ' • ' : '';
+                metaText += 'Ready to open';
+            }
+            fileMeta.textContent = metaText || 'Processing...';
+
+            // Update summary content
+            currentSummary = data.summary || '';
+            summary.textContent = currentSummary;
+
+            // Style based on type
+            summary.className = 'summary';
+            fileInfo.className = 'file-info';
+            
+            if (data.isError) {
+                summary.classList.add('error');
+                actions.style.display = 'none';
+            } else if (data.isProcessing) {
+                summary.classList.add('processing');
+                summary.innerHTML = '<span class="loading"></span>' + currentSummary;
+                actions.style.display = 'none';
+            } else if (data.isNotification) {
+                fileInfo.classList.add('notification');
+                actions.style.display = 'none';
+            } else if (data.isSuccess) {
+                fileInfo.classList.add('success');
+                actions.style.display = 'flex';
+            } else {
+                actions.style.display = currentSummary ? 'flex' : 'none';
+            }
+
+            // Update open file buttons
+            const openFileBtn = document.getElementById('openFileBtn');
+            const openLocationBtn = document.getElementById('openLocationBtn');
+            
+            if (currentFilePath) {
+                openFileBtn.style.display = 'block';
+                openLocationBtn.style.display = 'block';
+            } else {
+                openFileBtn.style.display = 'none';
+                openLocationBtn.style.display = 'none';
+            }
+        }
+
+        async function copyToClipboard() {
+            try {
+                const success = await window.electronAPI.copySummary(currentSummary);
+                if (success) {
+                    // Show feedback
+                    const summary = document.getElementById('summary');
+                    const originalBg = summary.style.backgroundColor;
+                    summary.style.backgroundColor = '#c6f6d5';
+                    setTimeout(() => {
+                        summary.style.backgroundColor = originalBg;
+                    }, 500);
+                }
+            } catch (error) {
+                console.error('Failed to copy:', error);
+            }
+        }
+
+        async function openFileLocation() {
+            if (currentFilePath) {
+                try {
+                    await window.electronAPI.openFileLocation(currentFilePath);
+                } catch (error) {
+                    console.error('Failed to open file location:', error);
+                }
+            }
+        }
+
+        async function openFileDefault() {
+            if (currentFilePath) {
+                try {
+                    await window.electronAPI.openFile(currentFilePath);
+                } catch (error) {
+                    console.error('Failed to open file:', error);
+                }
+            }
+        }
+
+        // Prevent context menu
+        document.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+        });
+
+        // Handle file drag and drop
+        document.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            document.body.style.borderColor = '#667eea';
+        });
+
+        document.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            document.body.style.borderColor = 'rgba(255, 255, 255, 0.3)';
+        });
+
+        document.addEventListener('drop', (e) => {
+            e.preventDefault();
+            document.body.style.borderColor = 'rgba(255, 255, 255, 0.3)';
+            
+            const files = Array.from(e.dataTransfer.files);
+            const supportedFile = files.find(file => {
+                const ext = file.name.toLowerCase();
+                return ext.endsWith('.pdf') || ext.endsWith('.docx') || ext.endsWith('.doc');
+            });
+            
+            if (supportedFile) {
+                // File will be processed by the file watcher
+                updateSummaryDisplay({
+                    file: supportedFile.name,
+                    summary: '🔄 Processing dropped file...\nPlease wait.',
+                    isProcessing: true
+                });
+            }
+        });
+    </script>
+</body>
 </html>

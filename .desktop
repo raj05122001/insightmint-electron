@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=InsightMint
+Exec=/path/to/insightmint %f
+Type=Application
+MimeType=application/pdf;application/vnd.openxmlformats-officedocument.wordprocessingml.document;application/msword;
+Categories=Office;Viewer;
