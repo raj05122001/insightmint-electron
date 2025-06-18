@@ -10,11 +10,12 @@
     "dev": "concurrently \"npm run api\" \"npm run start\"",
     "dev-simple": "concurrently \"npm run api\" \"npm run start-simple\"",
     "pack": "electron-builder --dir",
-    "dist": "electron-builder"
+    "dist": "electron-builder",
+    "postinstall": "node install-associations.js"
   },
   "dependencies": {
     "axios": "^1.4.0",
-    "chokidar": "^3.5.3",
+    "chokidar": "^3.6.0",
     "electron-store": "^8.1.0",
     "express": "^4.21.2",
     "mammoth": "^1.4.17",
@@ -37,24 +38,27 @@
         "ext": "pdf",
         "name": "PDF Document",
         "description": "PDF Document processed by InsightMint",
-        "role": "Viewer"
+        "role": "Editor",
+        "isPackage": false
       },
       {
-        "ext": "docx", 
+        "ext": "docx",
         "name": "Word Document",
         "description": "Word Document processed by InsightMint",
-        "role": "Viewer"
+        "role": "Editor",
+        "isPackage": false
       },
       {
         "ext": "doc",
-        "name": "Word Document", 
+        "name": "Word Document",
         "description": "Word Document processed by InsightMint",
-        "role": "Viewer"
+        "role": "Editor",
+        "isPackage": false
       }
     ],
     "protocols": [
       {
-        "name": "InsightMint",
+        "name": "InsightMint File Handler",
         "schemes": [
           "insightmint"
         ]
@@ -62,16 +66,66 @@
     ],
     "mac": {
       "icon": "assets/icon.icns",
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "extendInfo": {
+        "CFBundleDocumentTypes": [
+          {
+            "CFBundleTypeExtensions": [
+              "pdf"
+            ],
+            "CFBundleTypeName": "PDF Document",
+            "CFBundleTypeRole": "Editor",
+            "LSHandlerRank": "Alternate",
+            "LSItemContentTypes": [
+              "com.adobe.pdf"
+            ]
+          },
+          {
+            "CFBundleTypeExtensions": [
+              "docx",
+              "doc"
+            ],
+            "CFBundleTypeName": "Word Document",
+            "CFBundleTypeRole": "Editor",
+            "LSHandlerRank": "Alternate",
+            "LSItemContentTypes": [
+              "org.openxmlformats.wordprocessingml.document",
+              "com.microsoft.word.doc"
+            ]
+          }
+        ],
+        "CFBundleURLTypes": [
+          {
+            "CFBundleURLName": "InsightMint File Handler",
+            "CFBundleURLSchemes": [
+              "insightmint"
+            ]
+          }
+        ]
+      }
     },
     "win": {
       "icon": "assets/icon.ico",
       "target": "nsis",
       "requestedExecutionLevel": "asInvoker"
     },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "InsightMint",
+      "include": "installer.nsh"
+    },
     "linux": {
       "icon": "assets/icon.png",
-      "category": "Office"
+      "category": "Office",
+      "desktop": {
+        "Name": "InsightMint",
+        "Comment": "Document Summary Assistant",
+        "Keywords": "pdf;doc;docx;summary;ai;",
+        "MimeType": "application/pdf;application/vnd.openxmlformats-officedocument.wordprocessingml.document;application/msword;"
+      }
     }
   }
 }

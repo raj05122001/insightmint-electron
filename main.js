@@ -1,5 +1,5 @@
-// main.js - InsightMint Enhanced Version
-const { app, BrowserWindow, Tray, Menu, dialog, shell, ipcMain } = require('electron');
+// main.js - InsightMint Enhanced File Association Version
+const { app, BrowserWindow, Tray, Menu, dialog, shell, ipcMain, protocol } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const chokidar = require('chokidar');
@@ -14,6 +14,7 @@ let tray = null;
 let summaryWindow = null;
 let fileWatcher = null;
 let isAPIHealthy = false;
+let isWatcherEnabled = true; // New flag to control auto-processing
 
 // Check if app started in hidden mode
 const startHidden = process.argv.includes('--hidden') || process.argv.includes('--startup');
@@ -22,15 +23,23 @@ const startHidden = process.argv.includes('--hidden') || process.argv.includes('
 app.whenReady().then(async () => {
   console.log('🚀 InsightMint starting...');
   
+  // Register custom protocol for browser integration
+  setupCustomProtocol();
+  
   // Check API health first
   await checkAPIHealth();
   
   // Initialize core components
   createTray();
   createSummaryWindow();
-  setupFileWatcher();
+  
+  // Setup file watcher (but make it optional)
+  if (isWatcherEnabled) {
+    setupFileWatcher();
+  }
+  
   setupAutoStart();
-  setupProtocolHandler();
+  setupFileAssociations();
   
   // Process launch arguments if not started hidden
   if (!startHidden) {
@@ -39,6 +48,68 @@ app.whenReady().then(async () => {
   
   console.log('✅ InsightMint ready!');
 });
+
+// ─── 🔗 Custom Protocol Setup for Browser Integration ──────────────────
+function setupCustomProtocol() {
+  // Register insightmint:// protocol
+  protocol.registerHttpProtocol('insightmint', (request, callback) => {
+    const url = request.url;
+    console.log('📎 Custom protocol received:', url);
+    
+    // Parse insightmint://process?file=path/to/file.pdf
+    try {
+      const urlObj = new URL(url);
+      if (urlObj.hostname === 'process') {
+        const filePath = decodeURIComponent(urlObj.searchParams.get('file') || '');
+        if (filePath && fs.existsSync(filePath)) {
+          processFile(filePath);
+        }
+      }
+    } catch (error) {
+      console.error('❌ Protocol parsing error:', error);
+    }
+    
+    callback({ statusCode: 200 });
+  });
+}
+
+// ─── 🔧 Enhanced File Associations Setup ─────────────────────────────
+function setupFileAssociations() {
+  if (!app.isPackaged) {
+    console.log('🔧 Development mode - skipping file associations');
+    return;
+  }
+
+  try {
+    // Set as default protocol client
+    app.setAsDefaultProtocolClient('insightmint');
+    
+    // For Windows: Register file associations via registry
+    if (process.platform === 'win32') {
+      setupWindowsFileAssociations();
+    }
+    
+    console.log('✅ File associations configured');
+  } catch (error) {
+    console.warn('⚠️ Could not configure file associations:', error.message);
+  }
+}
+
+function setupWindowsFileAssociations() {
+  // This would typically be done during installation
+  // For runtime, we can at least register the protocol
+  try {
+    const execPath = process.execPath;
+    const appName = 'InsightMint';
+    
+    // Register application
+    app.setAsDefaultProtocolClient('insightmint', execPath, ['--process-file']);
+    
+    console.log('✅ Windows associations registered');
+  } catch (error) {
+    console.warn('⚠️ Windows association error:', error);
+  }
+}
 
 // ─── 🔍 API Health Check ──────────────────────────────────────────────
 async function checkAPIHealth() {
@@ -79,31 +150,22 @@ function setupAutoStart() {
   }
 }
 
-// ─── 🔗 Protocol Handler Setup ───────────────────────────────────────
-function setupProtocolHandler() {
-  // Set as default protocol client for insightmint://
-  if (app.isPackaged) {
-    app.setAsDefaultProtocolClient('insightmint');
+// ─── 📄 Enhanced Launch Arguments Processing ────────────────────────
+function processLaunchArguments() {
+  const args = process.argv.slice(1);
+  console.log('📋 Launch arguments:', args);
+  
+  // Look for --process-file flag (from file association)
+  const processFileIndex = args.indexOf('--process-file');
+  if (processFileIndex !== -1 && args[processFileIndex + 1]) {
+    const filePath = args[processFileIndex + 1];
+    console.log('📄 Processing file from association:', filePath);
+    processFile(filePath);
+    return;
   }
   
-  // Handle protocol URLs
-  app.on('open-url', (event, url) => {
-    event.preventDefault();
-    console.log('📎 Protocol URL received:', url);
-    
-    // Parse insightmint://file/path/to/document.pdf
-    if (url.startsWith('insightmint://file/')) {
-      const filePath = decodeURIComponent(url.replace('insightmint://file/', ''));
-      if (fs.existsSync(filePath) && SUPPORTED.includes(path.extname(filePath).toLowerCase())) {
-        processFile(filePath);
-      }
-    }
-  });
-}
-
-// ─── 📄 Launch Arguments Processing ──────────────────────────────────
-function processLaunchArguments() {
-  const fileArg = process.argv.slice(1).find(arg => {
+  // Look for file arguments
+  const fileArg = args.find(arg => {
     if (!arg || arg.startsWith('-')) return false;
     
     const ext = path.extname(arg).toLowerCase();
@@ -125,7 +187,7 @@ function processLaunchArguments() {
   }
 }
 
-// ─── 🖼️ Create Tray Icon & Menu ─────────────────────────────────────
+// ─── 🖼️ Enhanced Tray with File Watcher Toggle ─────────────────────
 function createTray() {
   try {
     const iconPath = path.join(__dirname, 'assets', 'tray-icon.png');
@@ -148,6 +210,21 @@ function createTray() {
         label: 'Open File…',
         accelerator: 'CmdOrCtrl+O',
         click: openFileDialog
+      },
+      {
+        label: 'Auto-Process New Files',
+        type: 'checkbox',
+        checked: isWatcherEnabled,
+        click: (item) => {
+          isWatcherEnabled = item.checked;
+          if (isWatcherEnabled && !fileWatcher) {
+            setupFileWatcher();
+          } else if (!isWatcherEnabled && fileWatcher) {
+            fileWatcher.close();
+            fileWatcher = null;
+          }
+          console.log(`📁 File watcher ${isWatcherEnabled ? 'enabled' : 'disabled'}`);
+        }
       },
       {
         label: 'API Status',
@@ -187,6 +264,10 @@ function createTray() {
           {
             label: 'Open Documents Folder',
             click: () => shell.openPath(app.getPath('documents'))
+          },
+          {
+            label: 'Install File Associations',
+            click: setupFileAssociations
           }
         ]
       },
@@ -299,8 +380,12 @@ function createSummaryWindow() {
   }
 }
 
-// ─── 📁 File Watcher Setup ──────────────────────────────────────────
+// ─── 📁 Optional File Watcher Setup ─────────────────────────────────
 function setupFileWatcher() {
+  if (fileWatcher) {
+    fileWatcher.close();
+  }
+  
   try {
     const watchDir = app.getPath('documents');
     const skipDirs = new Set([
@@ -318,10 +403,10 @@ function setupFileWatcher() {
         return isHidden || isSkipped || isTempFile;
       },
       persistent: true,
-      depth: 2, // Watch subdirectories too
+      depth: 2,
       ignorePermissionErrors: true,
       awaitWriteFinish: {
-        stabilityThreshold: 1500,
+        stabilityThreshold: 30000,
         pollInterval: 200
       }
     });
@@ -330,14 +415,12 @@ function setupFileWatcher() {
       console.log('👁️ File watcher ready, watching:', watchDir);
     });
     
+    // Only process files if watcher is enabled
     fileWatcher.on('add', (filePath) => {
-      console.log('📄 New file detected:', filePath);
-      processFile(filePath).catch(console.error);
-    });
-    
-    fileWatcher.on('change', (filePath) => {
-      console.log('📝 File changed:', filePath);
-      processFile(filePath).catch(console.error);
+      if (isWatcherEnabled) {
+        console.log('📄 New file detected:', filePath);
+        processFile(filePath).catch(console.error);
+      }
     });
     
     fileWatcher.on('error', (error) => {
@@ -429,7 +512,7 @@ Document Summary Assistant
   showNotification('About InsightMint', aboutMessage);
 }
 
-// ─── 🔄 File Processing Pipeline ───────────────────────────────────
+// ─── 🔄 Enhanced File Processing Pipeline ──────────────────────────
 async function processFile(filePath) {
   const ext = path.extname(filePath).toLowerCase();
   
@@ -455,6 +538,11 @@ async function processFile(filePath) {
   
   console.log(`🔄 Processing file: ${path.basename(filePath)} (${(stats.size / 1024).toFixed(1)}KB)`);
   
+  // Show app window immediately when file is processed
+  if (summaryWindow && !summaryWindow.isVisible()) {
+    safelyShow();
+  }
+  
   try {
     // Check API health before processing
     if (!isAPIHealthy) {
@@ -463,7 +551,6 @@ async function processFile(filePath) {
       
       if (!isAPIHealthy) {
         showError('Summary service is not available.\nPlease start the API server on port 8000.');
-        // User can still see the file info and manually open it
         return;
       }
     }
@@ -474,7 +561,6 @@ async function processFile(filePath) {
       summary: '🔄 Processing document...\nPlease wait while we generate your summary.',
       isProcessing: true
     });
-    safelyShow();
     
     // Read and encode file
     const buffer = fs.readFileSync(filePath);
@@ -508,16 +594,15 @@ async function processFile(filePath) {
       isSuccess: true
     });
     
+    // Keep window visible for user interaction
     safelyShow();
     
-    // Auto-hide after 45 seconds (more time since user needs to manually decide)
+    // Auto-hide after 60 seconds if user doesn't interact
     setTimeout(() => {
-      if (summaryWindow && summaryWindow.isVisible()) {
+      if (summaryWindow && summaryWindow.isVisible() && !summaryWindow.isFocused()) {
         summaryWindow.hide();
       }
-    }, 45000);
-    
-    // Don't automatically open file - let user decide
+    }, 60000);
     
     console.log('✅ File processed successfully:', fileName);
     
@@ -527,7 +612,6 @@ async function processFile(filePath) {
     let errorMessage = 'Failed to process document.';
     
     if (error.response) {
-      // API error
       errorMessage = error.response.data?.error || `API Error: ${error.response.status}`;
     } else if (error.code === 'ECONNREFUSED') {
       errorMessage = 'Cannot connect to summary service.\nPlease start the API server.';
@@ -539,8 +623,6 @@ async function processFile(filePath) {
     }
     
     showError(errorMessage);
-    
-    // User can manually open file using the button in summary window
   }
 }
 
@@ -550,30 +632,23 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   console.log('⚠️ Another instance is already running. Exiting...');
   app.quit();
-} else {
-  // Handle second instance
-  app.on('second-instance', (event, commandLine, workingDirectory) => {
-    console.log('🔄 Second instance detected');
-    
-    // Focus summary window if visible
-    if (summaryWindow && summaryWindow.isVisible()) {
-      summaryWindow.focus();
-    }
-    
-    // Process file from command line
-    const fileArg = commandLine.find(arg => {
-      const ext = path.extname(arg).toLowerCase();
-      return SUPPORTED.includes(ext) && fs.existsSync(arg);
-    });
-    
-    if (fileArg) {
-      console.log('📄 Processing file from second instance:', fileArg);
-      processFile(fileArg);
-    }
-  });
 }
 
-// ─── 🍎 macOS File Association ────────────────────────────────────
+// ─── 🔚 Enhanced App Lifecycle Events ─────────────────────────────
+app.on('window-all-closed', (event) => {
+  event.preventDefault();
+});
+
+app.on('before-quit', () => {
+  console.log('👋 InsightMint shutting down...');
+  app.isQuiting = true;
+  
+  if (fileWatcher) {
+    fileWatcher.close();
+  }
+});
+
+// ─── 🍎 Enhanced File Opening Events ───────────────────────────────
 app.on('open-file', (event, filePath) => {
   event.preventDefault();
   console.log('🍎 macOS open-file event:', filePath);
@@ -583,46 +658,69 @@ app.on('open-file', (event, filePath) => {
   }
 });
 
-// ─── 🔚 App Lifecycle Events ──────────────────────────────────────
-app.on('window-all-closed', (event) => {
-  // Prevent app from quitting - stay in tray
-  event.preventDefault();
-});
-
-app.on('before-quit', () => {
-  console.log('👋 InsightMint shutting down...');
-  app.isQuiting = true;
+// Handle Windows file associations
+app.on('second-instance', (event, commandLine, workingDirectory) => {
+  console.log('🔄 Second instance detected with args:', commandLine);
   
-  // Cleanup file watcher
-  if (fileWatcher) {
-    fileWatcher.close();
+  // Focus summary window if visible
+  if (summaryWindow && summaryWindow.isVisible()) {
+    summaryWindow.focus();
+  }
+  
+  // Check for --process-file flag
+  const processFileIndex = commandLine.indexOf('--process-file');
+  if (processFileIndex !== -1 && commandLine[processFileIndex + 1]) {
+    const filePath = commandLine[processFileIndex + 1];
+    console.log('📄 Processing file from second instance:', filePath);
+    processFile(filePath);
+    return;
+  }
+  
+  // Look for file arguments
+  const fileArg = commandLine.find(arg => {
+    const ext = path.extname(arg).toLowerCase();
+    return SUPPORTED.includes(ext) && fs.existsSync(arg);
+  });
+  
+  if (fileArg) {
+    console.log('📄 Processing file from second instance:', fileArg);
+    processFile(fileArg);
   }
 });
 
-app.on('activate', () => {
-  // macOS: Re-create window when dock icon is clicked
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createSummaryWindow();
+// Handle URL protocols
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  console.log('📎 Protocol URL received:', url);
+  
+  if (url.startsWith('insightmint://')) {
+    try {
+      const urlObj = new URL(url);
+      if (urlObj.hostname === 'process') {
+        const filePath = decodeURIComponent(urlObj.searchParams.get('file') || '');
+        if (filePath && fs.existsSync(filePath)) {
+          processFile(filePath);
+        }
+      }
+    } catch (error) {
+      console.error('❌ URL parsing error:', error);
+    }
   }
 });
 
 // ─── 🛡️ Global Error Handlers ─────────────────────────────────────
 process.on('unhandledRejection', (reason, promise) => {
   console.warn('⚠️ Unhandled Promise Rejection:', reason);
-  // Don't show error to user for every rejection
 });
 
 process.on('uncaughtException', (error) => {
   console.error('💥 Uncaught Exception:', error);
   showError(`Application Error: ${error.message}`);
   
-  // Prevent crash in production
   if (app.isPackaged) {
-    // Log error and continue
     return;
   }
   
-  // In development, crash to see the error
   process.exit(1);
 });
 
@@ -655,4 +753,4 @@ ipcMain.handle('copy-summary', async (event, summary) => {
   }
 });
 
-console.log('📄 InsightMint main.js loaded');
+console.log('📄 InsightMint enhanced main.js loaded');
