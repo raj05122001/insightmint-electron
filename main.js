@@ -1,438 +1,21 @@
-// main.js - InsightMint Enhanced File Association Version
+// main.js - InsightMint Enhanced File Association Version with File Access Monitor
 const { app, BrowserWindow, Tray, Menu, dialog, shell, ipcMain, protocol } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const chokidar = require('chokidar');
 const axios = require('axios');
+
+const { spawn, exec } = require('child_process');
+const EventEmitter = require('events');
+const os = require('os');
 
 // Supported document extensions
 const SUPPORTED = ['.pdf', '.docx', '.doc'];
 const API_BASE_URL = 'http://127.0.0.1:8000';
 
 // Globals
-let tray = null;
 let summaryWindow = null;
-let fileWatcher = null;
 let isAPIHealthy = false;
-let isWatcherEnabled = true; // New flag to control auto-processing
 
-// Check if app started in hidden mode
-const startHidden = process.argv.includes('--hidden') || process.argv.includes('--startup');
-
-// ─── 🚀 App Initialization ─────────────────────────────────────────────
-app.whenReady().then(async () => {
-  console.log('🚀 InsightMint starting...');
-  
-  // Register custom protocol for browser integration
-  setupCustomProtocol();
-  
-  // Check API health first
-  await checkAPIHealth();
-  
-  // Initialize core components
-  createTray();
-  createSummaryWindow();
-  
-  // Setup file watcher (but make it optional)
-  if (isWatcherEnabled) {
-    setupFileWatcher();
-  }
-  
-  setupAutoStart();
-  setupFileAssociations();
-  
-  // Process launch arguments if not started hidden
-  if (!startHidden) {
-    processLaunchArguments();
-  }
-  
-  console.log('✅ InsightMint ready!');
-});
-
-// ─── 🔗 Custom Protocol Setup for Browser Integration ──────────────────
-function setupCustomProtocol() {
-  // Register insightmint:// protocol
-  protocol.registerHttpProtocol('insightmint', (request, callback) => {
-    const url = request.url;
-    console.log('📎 Custom protocol received:', url);
-    
-    // Parse insightmint://process?file=path/to/file.pdf
-    try {
-      const urlObj = new URL(url);
-      if (urlObj.hostname === 'process') {
-        const filePath = decodeURIComponent(urlObj.searchParams.get('file') || '');
-        if (filePath && fs.existsSync(filePath)) {
-          processFile(filePath);
-        }
-      }
-    } catch (error) {
-      console.error('❌ Protocol parsing error:', error);
-    }
-    
-    callback({ statusCode: 200 });
-  });
-}
-
-// ─── 🔧 Enhanced File Associations Setup ─────────────────────────────
-function setupFileAssociations() {
-  if (!app.isPackaged) {
-    console.log('🔧 Development mode - skipping file associations');
-    return;
-  }
-
-  try {
-    // Set as default protocol client
-    app.setAsDefaultProtocolClient('insightmint');
-    
-    // For Windows: Register file associations via registry
-    if (process.platform === 'win32') {
-      setupWindowsFileAssociations();
-    }
-    
-    console.log('✅ File associations configured');
-  } catch (error) {
-    console.warn('⚠️ Could not configure file associations:', error.message);
-  }
-}
-
-function setupWindowsFileAssociations() {
-  // This would typically be done during installation
-  // For runtime, we can at least register the protocol
-  try {
-    const execPath = process.execPath;
-    const appName = 'InsightMint';
-    
-    // Register application
-    app.setAsDefaultProtocolClient('insightmint', execPath, ['--process-file']);
-    
-    console.log('✅ Windows associations registered');
-  } catch (error) {
-    console.warn('⚠️ Windows association error:', error);
-  }
-}
-
-// ─── 🔍 API Health Check ──────────────────────────────────────────────
-async function checkAPIHealth() {
-  try {
-    console.log('🔍 Checking API health...');
-    const response = await axios.get(`${API_BASE_URL}/health`, { 
-      timeout: 5000 
-    });
-    isAPIHealthy = response.status === 200;
-    console.log(`✅ API Server is ${isAPIHealthy ? 'healthy' : 'unhealthy'}`);
-  } catch (error) {
-    isAPIHealthy = false;
-    console.warn('⚠️ API Server not responding:', error.message);
-    
-    // Show warning but don't block app startup
-    if (!startHidden) {
-      setTimeout(() => {
-        showError('API Server not running on port 8000.\nPlease start the summary service.');
-      }, 2000);
-    }
-  }
-  return isAPIHealthy;
-}
-
-// ─── 🔧 Auto-Start Configuration ─────────────────────────────────────
-function setupAutoStart() {
-  if (app.isPackaged) {
-    try {
-      app.setLoginItemSettings({
-        openAtLogin: true,
-        path: process.execPath,
-        args: ['--startup', '--hidden']
-      });
-      console.log('✅ Auto-start configured');
-    } catch (error) {
-      console.warn('⚠️ Could not configure auto-start:', error.message);
-    }
-  }
-}
-
-// ─── 📄 Enhanced Launch Arguments Processing ────────────────────────
-function processLaunchArguments() {
-  const args = process.argv.slice(1);
-  console.log('📋 Launch arguments:', args);
-  
-  // Look for --process-file flag (from file association)
-  const processFileIndex = args.indexOf('--process-file');
-  if (processFileIndex !== -1 && args[processFileIndex + 1]) {
-    const filePath = args[processFileIndex + 1];
-    console.log('📄 Processing file from association:', filePath);
-    processFile(filePath);
-    return;
-  }
-  
-  // Look for file arguments
-  const fileArg = args.find(arg => {
-    if (!arg || arg.startsWith('-')) return false;
-    
-    const ext = path.extname(arg).toLowerCase();
-    const isSupported = SUPPORTED.includes(ext);
-    const exists = fs.existsSync(arg);
-    
-    if (isSupported && !exists) {
-      console.warn('⚠️ File not found:', arg);
-    }
-    
-    return isSupported && exists;
-  });
-  
-  if (fileArg) {
-    console.log('📄 Processing launch file:', fileArg);
-    processFile(fileArg);
-  } else {
-    console.log('ℹ️ No valid file argument provided');
-  }
-}
-
-// ─── 🖼️ Enhanced Tray with File Watcher Toggle ─────────────────────
-function createTray() {
-  try {
-    const iconPath = path.join(__dirname, 'assets', 'tray-icon.png');
-    
-    // Fallback icon if file doesn't exist
-    if (!fs.existsSync(iconPath)) {
-      console.warn('⚠️ Tray icon not found, using default');
-    }
-    
-    tray = new Tray(iconPath);
-    
-    const contextMenu = Menu.buildFromTemplate([
-      {
-        label: 'InsightMint',
-        enabled: false,
-        icon: path.join(__dirname, 'assets', 'menu-icon.png')
-      },
-      { type: 'separator' },
-      {
-        label: 'Open File…',
-        accelerator: 'CmdOrCtrl+O',
-        click: openFileDialog
-      },
-      {
-        label: 'Auto-Process New Files',
-        type: 'checkbox',
-        checked: isWatcherEnabled,
-        click: (item) => {
-          isWatcherEnabled = item.checked;
-          if (isWatcherEnabled && !fileWatcher) {
-            setupFileWatcher();
-          } else if (!isWatcherEnabled && fileWatcher) {
-            fileWatcher.close();
-            fileWatcher = null;
-          }
-          console.log(`📁 File watcher ${isWatcherEnabled ? 'enabled' : 'disabled'}`);
-        }
-      },
-      {
-        label: 'API Status',
-        submenu: [
-          {
-            label: isAPIHealthy ? '✅ Connected' : '❌ Disconnected',
-            enabled: false
-          },
-          {
-            label: 'Test Connection',
-            click: async () => {
-              const healthy = await checkAPIHealth();
-              showNotification(
-                healthy ? 'API Connected Successfully' : 'API Connection Failed',
-                healthy ? 'Summary service is running' : 'Please start the summary service'
-              );
-            }
-          }
-        ]
-      },
-      { type: 'separator' },
-      {
-        label: 'Settings',
-        submenu: [
-          {
-            label: 'Auto-start',
-            type: 'checkbox',
-            checked: app.getLoginItemSettings().openAtLogin,
-            click: (item) => {
-              app.setLoginItemSettings({
-                openAtLogin: item.checked,
-                path: process.execPath,
-                args: item.checked ? ['--startup', '--hidden'] : []
-              });
-            }
-          },
-          {
-            label: 'Open Documents Folder',
-            click: () => shell.openPath(app.getPath('documents'))
-          },
-          {
-            label: 'Install File Associations',
-            click: setupFileAssociations
-          }
-        ]
-      },
-      { type: 'separator' },
-      {
-        label: 'About InsightMint',
-        click: showAbout
-      },
-      {
-        label: 'Quit InsightMint',
-        accelerator: 'CmdOrCtrl+Q',
-        click: () => {
-          app.isQuiting = true;
-          app.quit();
-        }
-      }
-    ]);
-    
-    tray.setToolTip('InsightMint - Document Summary Assistant');
-    tray.setContextMenu(contextMenu);
-    
-    // Single click to open file dialog
-    tray.on('click', openFileDialog);
-    
-    // Double click to show/hide summary window
-    tray.on('double-click', () => {
-      if (summaryWindow) {
-        if (summaryWindow.isVisible()) {
-          summaryWindow.hide();
-        } else {
-          summaryWindow.show();
-        }
-      }
-    });
-    
-    console.log('✅ Tray created');
-  } catch (error) {
-    console.error('❌ Failed to create tray:', error);
-  }
-}
-
-// ─── 📂 File Dialog ──────────────────────────────────────────────────
-async function openFileDialog() {
-  try {
-    const result = await dialog.showOpenDialog({
-      title: 'Open Document for Summary',
-      properties: ['openFile'],
-      filters: [
-        { name: 'All Supported', extensions: ['pdf', 'docx', 'doc'] },
-        { name: 'PDF Files', extensions: ['pdf'] },
-        { name: 'Word Documents', extensions: ['docx', 'doc'] },
-        { name: 'All Files', extensions: ['*'] }
-      ],
-      defaultPath: app.getPath('documents')
-    });
-    
-    if (!result.canceled && result.filePaths.length > 0) {
-      const filePath = result.filePaths[0];
-      console.log('📂 User selected file:', filePath);
-      processFile(filePath);
-    }
-  } catch (error) {
-    console.error('❌ Error opening file dialog:', error);
-    showError('Unable to open file dialog: ' + error.message);
-  }
-}
-
-// ─── 🖥️ Summary Window Creation ─────────────────────────────────────
-function createSummaryWindow() {
-  try {
-    summaryWindow = new BrowserWindow({
-      width: 480,
-      height: 380,
-      show: false,
-      frame: false,
-      alwaysOnTop: true,
-      resizable: false,
-      skipTaskbar: true,
-      transparent: true,
-      webPreferences: {
-        preload: path.join(__dirname, 'preload.js'),
-        contextIsolation: true,
-        enableRemoteModule: false,
-        nodeIntegration: false
-      }
-    });
-    
-    summaryWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-    
-    // Handle window close
-    summaryWindow.on('close', (event) => {
-      if (!app.isQuiting) {
-        event.preventDefault();
-        summaryWindow.hide();
-      }
-    });
-    
-    // Auto-hide after losing focus (optional)
-    summaryWindow.on('blur', () => {
-      setTimeout(() => {
-        if (summaryWindow && summaryWindow.isVisible() && !summaryWindow.isFocused()) {
-          summaryWindow.hide();
-        }
-      }, 3000);
-    });
-    
-    console.log('✅ Summary window created');
-  } catch (error) {
-    console.error('❌ Failed to create summary window:', error);
-  }
-}
-
-// ─── 📁 Optional File Watcher Setup ─────────────────────────────────
-function setupFileWatcher() {
-  if (fileWatcher) {
-    fileWatcher.close();
-  }
-  
-  try {
-    const watchDir = app.getPath('documents');
-    const skipDirs = new Set([
-      'My Music', 'My Pictures', 'My Videos',
-      'node_modules', '.git', 'temp', 'cache'
-    ]);
-    
-    fileWatcher = chokidar.watch(watchDir, {
-      ignored: (incomingPath) => {
-        const base = path.basename(incomingPath);
-        const isHidden = base.startsWith('.') || base.startsWith('~');
-        const isSkipped = skipDirs.has(base);
-        const isTempFile = base.includes('tmp') || base.includes('temp');
-        
-        return isHidden || isSkipped || isTempFile;
-      },
-      persistent: true,
-      depth: 2,
-      ignorePermissionErrors: true,
-      awaitWriteFinish: {
-        stabilityThreshold: 30000,
-        pollInterval: 200
-      }
-    });
-    
-    fileWatcher.on('ready', () => {
-      console.log('👁️ File watcher ready, watching:', watchDir);
-    });
-    
-    // Only process files if watcher is enabled
-    fileWatcher.on('add', (filePath) => {
-      if (isWatcherEnabled) {
-        console.log('📄 New file detected:', filePath);
-        processFile(filePath).catch(console.error);
-      }
-    });
-    
-    fileWatcher.on('error', (error) => {
-      if (error.code !== 'EPERM' && error.code !== 'EACCES') {
-        console.warn('⚠️ Watcher error:', error);
-      }
-    });
-    
-  } catch (error) {
-    console.error('❌ Failed to setup file watcher:', error);
-  }
-}
 
 // ─── 🔧 Safe IPC Communication ──────────────────────────────────────
 function safelySend(channel, data) {
@@ -479,41 +62,9 @@ function showError(message, duration = 8000) {
   }
 }
 
-// ─── 📢 Notification Helper ────────────────────────────────────────
-function showNotification(title, body) {
-  if (safelySend('show-summary', {
-    file: title,
-    summary: body,
-    isNotification: true
-  })) {
-    safelyShow();
-    
-    setTimeout(() => {
-      if (summaryWindow && summaryWindow.isVisible()) {
-        summaryWindow.hide();
-      }
-    }, 5000);
-  }
-}
-
-// ─── ℹ️ About Dialog ──────────────────────────────────────────────
-function showAbout() {
-  const aboutMessage = `InsightMint v1.0.0
-
-Document Summary Assistant
-
-• Automatically processes PDF and Word documents
-• Provides AI-generated summaries
-• Monitors Documents folder for new files
-• Quick preview with overlay window
-
-© 2024 InsightMint. All rights reserved.`;
-  
-  showNotification('About InsightMint', aboutMessage);
-}
 
 // ─── 🔄 Enhanced File Processing Pipeline ──────────────────────────
-async function processFile(filePath) {
+async function processFile(filePath, metadata = {}) {
   const ext = path.extname(filePath).toLowerCase();
   
   // Check if file is supported
@@ -537,6 +88,12 @@ async function processFile(filePath) {
   }
   
   console.log(`🔄 Processing file: ${path.basename(filePath)} (${(stats.size / 1024).toFixed(1)}KB)`);
+  if (metadata.source) {
+    console.log(`📍 Source: ${metadata.source}`);
+  }
+  if (metadata.detectedBy) {
+    console.log(`📖 Detected by: ${metadata.detectedBy}`);
+  }
   
   // Show app window immediately when file is processed
   if (summaryWindow && !summaryWindow.isVisible()) {
@@ -555,10 +112,19 @@ async function processFile(filePath) {
       }
     }
     
+    // Create processing message
+    let processingMessage = '🔄 Processing document...\nPlease wait while we generate your summary.';
+    if (metadata.detectedBy) {
+      processingMessage += `\n\n📖 Opened in: ${metadata.detectedBy}`;
+    }
+    if (metadata.source) {
+      processingMessage += `\n📍 Source: ${metadata.source}`;
+    }
+    
     // Show processing indicator
     safelySend('show-summary', {
       file: path.basename(filePath),
-      summary: '🔄 Processing document...\nPlease wait while we generate your summary.',
+      summary: processingMessage,
       isProcessing: true
     });
     
@@ -583,7 +149,21 @@ async function processFile(filePath) {
       }
     );
     
-    const summary = response.data.summary || 'No summary was generated for this document.';
+    let summary = response.data.summary || 'No summary was generated for this document.';
+    
+    // Add metadata to summary if available
+    if (metadata.detectedBy || metadata.source) {
+      summary += '\n\n─────────────────────';
+      if (metadata.detectedBy) {
+        summary += `\n📖 Opened in: ${metadata.detectedBy}`;
+      }
+      if (metadata.source) {
+        summary += `\n📍 Detected by: ${metadata.source}`;
+      }
+      if (metadata.processInfo) {
+        summary += `\n🔧 Process: ${metadata.processInfo}`;
+      }
+    }
     
     // Show summary
     safelySend('show-summary', {
@@ -634,96 +214,6 @@ if (!gotLock) {
   app.quit();
 }
 
-// ─── 🔚 Enhanced App Lifecycle Events ─────────────────────────────
-app.on('window-all-closed', (event) => {
-  event.preventDefault();
-});
-
-app.on('before-quit', () => {
-  console.log('👋 InsightMint shutting down...');
-  app.isQuiting = true;
-  
-  if (fileWatcher) {
-    fileWatcher.close();
-  }
-});
-
-// ─── 🍎 Enhanced File Opening Events ───────────────────────────────
-app.on('open-file', (event, filePath) => {
-  event.preventDefault();
-  console.log('🍎 macOS open-file event:', filePath);
-  
-  if (SUPPORTED.includes(path.extname(filePath).toLowerCase())) {
-    processFile(filePath);
-  }
-});
-
-// Handle Windows file associations
-app.on('second-instance', (event, commandLine, workingDirectory) => {
-  console.log('🔄 Second instance detected with args:', commandLine);
-  
-  // Focus summary window if visible
-  if (summaryWindow && summaryWindow.isVisible()) {
-    summaryWindow.focus();
-  }
-  
-  // Check for --process-file flag
-  const processFileIndex = commandLine.indexOf('--process-file');
-  if (processFileIndex !== -1 && commandLine[processFileIndex + 1]) {
-    const filePath = commandLine[processFileIndex + 1];
-    console.log('📄 Processing file from second instance:', filePath);
-    processFile(filePath);
-    return;
-  }
-  
-  // Look for file arguments
-  const fileArg = commandLine.find(arg => {
-    const ext = path.extname(arg).toLowerCase();
-    return SUPPORTED.includes(ext) && fs.existsSync(arg);
-  });
-  
-  if (fileArg) {
-    console.log('📄 Processing file from second instance:', fileArg);
-    processFile(fileArg);
-  }
-});
-
-// Handle URL protocols
-app.on('open-url', (event, url) => {
-  event.preventDefault();
-  console.log('📎 Protocol URL received:', url);
-  
-  if (url.startsWith('insightmint://')) {
-    try {
-      const urlObj = new URL(url);
-      if (urlObj.hostname === 'process') {
-        const filePath = decodeURIComponent(urlObj.searchParams.get('file') || '');
-        if (filePath && fs.existsSync(filePath)) {
-          processFile(filePath);
-        }
-      }
-    } catch (error) {
-      console.error('❌ URL parsing error:', error);
-    }
-  }
-});
-
-// ─── 🛡️ Global Error Handlers ─────────────────────────────────────
-process.on('unhandledRejection', (reason, promise) => {
-  console.warn('⚠️ Unhandled Promise Rejection:', reason);
-});
-
-process.on('uncaughtException', (error) => {
-  console.error('💥 Uncaught Exception:', error);
-  showError(`Application Error: ${error.message}`);
-  
-  if (app.isPackaged) {
-    return;
-  }
-  
-  process.exit(1);
-});
-
 // ─── 📱 IPC Handlers ──────────────────────────────────────────────
 ipcMain.handle('open-file-location', async (event, filePath) => {
   try {
@@ -753,4 +243,539 @@ ipcMain.handle('copy-summary', async (event, summary) => {
   }
 });
 
-console.log('📄 InsightMint enhanced main.js loaded');
+console.log('📄 InsightMint enhanced main.js with File Access Monitor loaded');
+
+class FileAccessMonitor extends EventEmitter {
+    constructor() {
+        super();
+        this.isMonitoring = false;
+        this.targetExtensions = ['.pdf', '.doc', '.docx'];
+        this.processMap = new Map();
+        this.fileWatchers = new Map();
+        this.debugMode = true; // Enable debug logging
+        this.readerApps = {
+            'AcroRd32.exe': 'Adobe Acrobat Reader',
+            'Acrobat.exe': 'Adobe Acrobat', 
+            'AcroRd32': 'Adobe Acrobat Reader',
+            'Acrobat': 'Adobe Acrobat',
+            'WINWORD.EXE': 'Microsoft Word',
+            'WINWORD': 'Microsoft Word',
+            'chrome.exe': 'Google Chrome',
+            'chrome': 'Google Chrome',
+            'firefox.exe': 'Mozilla Firefox',
+            'firefox': 'Mozilla Firefox',
+            'msedge.exe': 'Microsoft Edge',
+            'msedge': 'Microsoft Edge',
+            'FoxitReader.exe': 'Foxit Reader',
+            'SumatraPDF.exe': 'SumatraPDF',
+            'POWERPNT.EXE': 'Microsoft PowerPoint',
+            'EXCEL.EXE': 'Microsoft Excel',
+            'notepad.exe': 'Notepad',
+            'Code.exe': 'Visual Studio Code'
+        };
+    }
+
+    log(message) {
+        if (this.debugMode) {
+            console.log(`[DEBUG] ${message}`);
+        }
+    }
+
+    async startAdvancedMonitoring() {
+        console.log('🔍 Starting Advanced File Monitoring...');
+        this.isMonitoring = true;
+
+        // Method 1: Fast process scanning (every 1 second)
+        const fastScanner = setInterval(() => {
+            if (!this.isMonitoring) {
+                clearInterval(fastScanner);
+                return;
+            }
+            this.quickProcessScan();
+        }, 1000);
+
+        // Method 2: File system watchers for common directories
+        this.setupDirectoryWatchers();
+
+        // Method 3: Windows handles monitoring
+        const handleMonitor = setInterval(() => {
+            if (!this.isMonitoring) {
+                clearInterval(handleMonitor);
+                return;
+            }
+            this.monitorFileHandles();
+        }, 2000);
+
+        // Method 4: Recent files monitoring
+        const recentMonitor = setInterval(() => {
+            if (!this.isMonitoring) {
+                clearInterval(recentMonitor);
+                return;
+            }
+            this.monitorRecentFiles();
+        }, 3000);
+
+        return { fastScanner, handleMonitor, recentMonitor };
+    }
+
+    async quickProcessScan() {
+        // Simplified and faster process scanning
+        const command = `
+            Get-Process | Where-Object { 
+                $_.ProcessName -match "(AcroRd32|Acrobat|WINWORD|chrome|firefox|msedge|Foxit|Sumatra)" -and 
+                $_.MainWindowTitle -ne "" 
+            } | ForEach-Object {
+                try {
+                    $proc = Get-WmiObject Win32_Process -Filter "ProcessId = $($_.Id)" -ErrorAction SilentlyContinue
+                    if ($proc -and $proc.CommandLine) {
+                        [PSCustomObject]@{
+                            Name = $_.ProcessName
+                            Id = $_.Id
+                            Title = $_.MainWindowTitle
+                            CommandLine = $proc.CommandLine
+                        }
+                    }
+                } catch { }
+            } | ConvertTo-Json
+        `;
+
+        exec(`powershell.exe -Command "${command}"`, (error, stdout, stderr) => {
+            if (error) {
+                this.log(`Process scan error: ${error.message}`);
+                return;
+            }
+
+            try {
+                if (stdout.trim()) {
+                    const processes = JSON.parse(stdout);
+                    const processArray = Array.isArray(processes) ? processes : [processes];
+                    
+                    this.log(`Found ${processArray.length} relevant processes`);
+                    
+                    processArray.forEach(process => {
+                        const key = `${process.Id}-${process.Name}`;
+                        if (!this.processMap.has(key)) {
+                            this.processMap.set(key, Date.now());
+                            this.analyzeProcess(process);
+                        }
+                    });
+                }
+            } catch (parseError) {
+                this.log(`JSON parse error: ${parseError.message}`);
+            }
+        });
+    }
+
+    setupDirectoryWatchers() {
+        const watchDirs = [
+            path.join(os.homedir(), 'Documents'),
+            path.join(os.homedir(), 'Desktop'), 
+            path.join(os.homedir(), 'Downloads'),
+            'C:\\Users\\Public\\Documents'
+        ];
+
+        watchDirs.forEach(dir => {
+            if (fs.existsSync(dir)) {
+                try {
+                    this.log(`Setting up watcher for: ${dir}`);
+                    const watcher = fs.watch(dir, { recursive: false }, (eventType, filename) => {
+                        if (filename && eventType === 'change') {
+                            const fullPath = path.join(dir, filename);
+                            const ext = path.extname(filename).toLowerCase();
+                            
+                            if (this.targetExtensions.includes(ext)) {
+                                this.log(`File system event: ${eventType} - ${filename}`);
+                                setTimeout(() => {
+                                    this.checkFileAccess(fullPath, filename);
+                                }, 500);
+                            }
+                        }
+                    });
+                    
+                    this.fileWatchers.set(dir, watcher);
+                    console.log(`👀 Watching: ${dir}`);
+                } catch (error) {
+                    this.log(`Error setting up watcher for ${dir}: ${error.message}`);
+                }
+            }
+        });
+    }
+
+    async checkFileAccess(filePath, fileName) {
+        this.log(`Checking file access for: ${fileName}`);
+        
+        // Use handle utility or process search to find which process opened the file
+        const command = `
+            $fileName = "${fileName}"
+            $processes = Get-Process | Where-Object { $_.MainWindowTitle -like "*$fileName*" }
+            $processes | ForEach-Object {
+                [PSCustomObject]@{
+                    Name = $_.ProcessName
+                    Id = $_.Id
+                    Title = $_.MainWindowTitle
+                    FilePath = "${filePath}"
+                }
+            } | ConvertTo-Json
+        `;
+
+        exec(`powershell.exe -Command "${command}"`, (error, stdout, stderr) => {
+            if (!error && stdout.trim()) {
+                try {
+                    const result = JSON.parse(stdout);
+                    const processes = Array.isArray(result) ? result : [result];
+                    
+                    processes.forEach(proc => {
+                        this.reportFileOpened({
+                            fileName: fileName,
+                            fullPath: filePath,
+                            extension: path.extname(fileName),
+                            readerApplication: this.getReaderName(proc.Name),
+                            processName: proc.Name,
+                            processId: proc.Id,
+                            windowTitle: proc.Title,
+                            timestamp: new Date().toISOString(),
+                            source: 'File System Monitor'
+                        });
+                    });
+                } catch (parseError) {
+                    this.log(`Error parsing file access result: ${parseError.message}`);
+                }
+            }
+        });
+    }
+
+    async monitorFileHandles() {
+        // Monitor file handles using PowerShell
+        const command = `
+            $processes = Get-Process | Where-Object { $_.ProcessName -match "(AcroRd32|Acrobat|WINWORD|chrome|firefox|msedge)" }
+            foreach ($proc in $processes) {
+                try {
+                    $wmiProc = Get-WmiObject Win32_Process -Filter "ProcessId = $($proc.Id)" -ErrorAction SilentlyContinue
+                    if ($wmiProc -and $wmiProc.CommandLine -and $wmiProc.CommandLine -match "\\.(pdf|doc|docx)") {
+                        [PSCustomObject]@{
+                            ProcessName = $proc.ProcessName
+                            ProcessId = $proc.Id
+                            WindowTitle = $proc.MainWindowTitle
+                            CommandLine = $wmiProc.CommandLine
+                        }
+                    }
+                } catch { }
+            } | ConvertTo-Json
+        `;
+
+        exec(`powershell.exe -Command "${command}"`, (error, stdout, stderr) => {
+            if (!error && stdout.trim()) {
+                try {
+                    const result = JSON.parse(stdout);
+                    const processes = Array.isArray(result) ? result : [result];
+                    
+                    processes.forEach(proc => {
+                        const key = `handle-${proc.ProcessId}`;
+                        if (!this.processMap.has(key)) {
+                            this.processMap.set(key, Date.now());
+                            this.analyzeProcess(proc);
+                        }
+                    });
+                } catch (parseError) {
+                    this.log(`Handle monitor parse error: ${parseError.message}`);
+                }
+            }
+        });
+    }
+
+    async monitorRecentFiles() {
+        const recentFolder = path.join(os.homedir(), 'AppData\\Roaming\\Microsoft\\Windows\\Recent');
+        
+        try {
+            const files = fs.readdirSync(recentFolder);
+            const now = Date.now();
+            
+            files.forEach(file => {
+                if (file.endsWith('.lnk')) {
+                    const filePath = path.join(recentFolder, file);
+                    const stats = fs.statSync(filePath);
+                    
+                    // Check if file was accessed in last 5 seconds
+                    if (now - stats.mtime.getTime() < 5000) {
+                        this.log(`Recent file detected: ${file}`);
+                        this.analyzeRecentFile(filePath, file);
+                        processFile(filePath, file)
+                    }
+                }
+            });
+        } catch (error) {
+            this.log(`Recent files monitor error: ${error.message}`);
+        }
+    }
+
+    analyzeRecentFile(linkPath, fileName) {
+        const command = `
+            try {
+                $shell = New-Object -ComObject WScript.Shell
+                $shortcut = $shell.CreateShortcut("${linkPath.replace(/\\/g, '\\\\')}")
+                $targetPath = $shortcut.TargetPath
+                if ($targetPath -match "\\.(pdf|doc|docx)$") {
+                    @{
+                        TargetPath = $targetPath
+                        Arguments = $shortcut.Arguments
+                    } | ConvertTo-Json
+                }
+            } catch {
+                Write-Error $_.Exception.Message
+            }
+        `;
+
+        exec(`powershell.exe -Command "${command}"`, (error, stdout, stderr) => {
+            if (!error && stdout.trim()) {
+                try {
+                    const result = JSON.parse(stdout);
+                    const ext = path.extname(result.TargetPath).toLowerCase();
+                    
+                    if (this.targetExtensions.includes(ext)) {
+                        this.reportFileOpened({
+                            fileName: path.basename(result.TargetPath),
+                            fullPath: result.TargetPath,
+                            extension: ext,
+                            readerApplication: 'Recently Accessed',
+                            processName: 'System',
+                            processId: 'Recent',
+                            timestamp: new Date().toISOString(),
+                            source: 'Recent Files Monitor'
+                        });
+                    }
+                } catch (parseError) {
+                    this.log(`Recent file parse error: ${parseError.message}`);
+                }
+            }
+        });
+    }
+
+    analyzeProcess(processData) {
+        this.log(`Analyzing process: ${processData.Name} (${processData.Id})`);
+        
+        if (processData.CommandLine) {
+            const filePaths = this.extractFilePaths(processData.CommandLine);
+            this.log(`Found ${filePaths.length} file paths in command line`);
+            
+            filePaths.forEach(filePath => {
+                const fileExt = path.extname(filePath).toLowerCase();
+                
+                if (this.targetExtensions.includes(fileExt)) {
+                    this.reportFileOpened({
+                        fileName: path.basename(filePath),
+                        fullPath: filePath,
+                        extension: fileExt,
+                        readerApplication: this.getReaderName(processData.Name),
+                        processName: processData.Name,
+                        processId: processData.Id,
+                        windowTitle: processData.Title || 'N/A',
+                        timestamp: new Date().toISOString(),
+                        source: 'Process Analysis'
+                    });
+                }
+            });
+        }
+
+        // Also check window title for file names
+        if (processData.Title) {
+            const titleFiles = this.extractFileNamesFromTitle(processData.Title);
+            titleFiles.forEach(fileName => {
+                const ext = path.extname(fileName).toLowerCase();
+                if (this.targetExtensions.includes(ext)) {
+                    this.reportFileOpened({
+                        fileName: fileName,
+                        fullPath: 'Unknown (from window title)',
+                        extension: ext,
+                        readerApplication: this.getReaderName(processData.Name),
+                        processName: processData.Name,
+                        processId: processData.Id,
+                        windowTitle: processData.Title,
+                        timestamp: new Date().toISOString(),
+                        source: 'Window Title Analysis'
+                    });
+                }
+            });
+        }
+    }
+
+    extractFileNamesFromTitle(title) {
+        const files = [];
+        const regex = /([^\\\/]*\.(pdf|doc|docx))/gi;
+        let match;
+        
+        while ((match = regex.exec(title)) !== null) {
+            files.push(match[1]);
+        }
+        
+        return files;
+    }
+
+    getReaderName(processName) {
+        return this.readerApps[processName] || 
+               this.readerApps[processName + '.exe'] || 
+               processName;
+    }
+
+    extractFilePaths(commandLine) {
+        if (!commandLine) return [];
+        
+        const paths = [];
+        const patterns = [
+            /"([^"]*\.(pdf|doc|docx))"/gi,  // Quoted paths
+            /([A-Za-z]:\\[^\s"]*\.(pdf|doc|docx))/gi,  // Full paths
+            /([^\s"]*\.(pdf|doc|docx))/gi   // Simple paths
+        ];
+        
+        patterns.forEach(regex => {
+            let match;
+            while ((match = regex.exec(commandLine)) !== null) {
+                const filePath = match[1];
+                if (filePath && !paths.includes(filePath)) {
+                    paths.push(filePath);
+                }
+            }
+        });
+        
+        return paths;
+    }
+
+    reportFileOpened(fileInfo) {
+        console.log('\n🎯 FILE OPENED DETECTED!');
+        console.log(`📄 File: ${fileInfo.fileName}`);
+        console.log(`📁 Path: ${fileInfo.fullPath}`);
+        console.log(`📖 Reader: ${fileInfo.readerApplication}`);
+        console.log(`🔧 Process: ${fileInfo.processName} (${fileInfo.processId})`);
+        console.log(`🪟 Window: ${fileInfo.windowTitle}`);
+        console.log(`⏰ Time: ${fileInfo.timestamp}`);
+        console.log(`📊 Source: ${fileInfo.source}`);
+        console.log('═'.repeat(60));
+
+        this.emit('fileOpened', fileInfo);
+    }
+
+    // Manual test function
+    async testCurrentlyOpen() {
+        console.log('\n🔍 Testing currently open files...');
+        
+        const command = `
+            Get-Process | Where-Object { 
+                $_.MainWindowTitle -ne "" -and 
+                ($_.ProcessName -match "(AcroRd32|Acrobat|WINWORD|chrome|firefox|msedge|Foxit|Sumatra)" -or
+                 $_.MainWindowTitle -match "\\.(pdf|doc|docx)")
+            } | ForEach-Object {
+                [PSCustomObject]@{
+                    Name = $_.ProcessName
+                    Id = $_.Id
+                    Title = $_.MainWindowTitle
+                    HasWindow = $_.MainWindowHandle -ne 0
+                }
+            } | ConvertTo-Json
+        `;
+
+        return new Promise((resolve) => {
+            exec(`powershell.exe -Command "${command}"`, (error, stdout, stderr) => {
+                if (error) {
+                    console.log('❌ Test error:', error.message);
+                    resolve([]);
+                    return;
+                }
+
+                try {
+                    if (stdout.trim()) {
+                        const result = JSON.parse(stdout);
+                        const processes = Array.isArray(result) ? result : [result];
+                        
+                        console.log(`🔍 Found ${processes.length} processes with windows:`);
+                        processes.forEach((proc, index) => {
+                            console.log(`${index + 1}. ${proc.Name} (${proc.Id})`);
+                            console.log(`   Title: ${proc.Title}`);
+                            console.log(`   Has Window: ${proc.HasWindow}`);
+                        });
+                        
+                        resolve(processes);
+                    } else {
+                        console.log('📄 No relevant processes found');
+                        resolve([]);
+                    }
+                } catch (parseError) {
+                    console.log('❌ Parse error:', parseError.message);
+                    resolve([]);
+                }
+            });
+        });
+    }
+
+    stop() {
+        this.isMonitoring = false;
+        
+        // Close file watchers
+        this.fileWatchers.forEach((watcher, dir) => {
+            watcher.close();
+            this.log(`Closed watcher for: ${dir}`);
+        });
+        this.fileWatchers.clear();
+        
+        console.log('✋ All monitoring stopped.');
+    }
+}
+
+// Log function
+function logFileAccess(fileInfo) {
+    const logEntry = {
+        user: os.userInfo().username,
+        computer: os.hostname(),
+        ...fileInfo
+    };
+    
+    const logFile = path.join(__dirname, 'file_access.log');
+    const logLine = `${new Date().toISOString()} - ${JSON.stringify(logEntry)}\n`;
+    
+    try {
+        fs.appendFileSync(logFile, logLine);
+        console.log('💾 Logged to file_access.log');
+    } catch (error) {
+        console.log('❌ Error writing to log file:', error.message);
+    }
+}
+
+// Main function
+async function main() {
+    const monitor = new FileAccessMonitor();
+
+    monitor.on('fileOpened', (fileInfo) => {
+        logFileAccess(fileInfo);
+    });
+
+    console.log('🚀 Starting Enhanced File Access Monitor...');
+    console.log('📋 Monitoring: PDF, DOC, DOCX files');
+    console.log('⚡ Multiple detection methods enabled');
+    console.log('🛑 Press Ctrl+C to stop\n');
+
+    // Start enhanced monitoring
+    await monitor.startAdvancedMonitoring();
+
+    // Test currently open files immediately
+    setTimeout(async () => {
+        await monitor.testCurrentlyOpen();
+    }, 2000);
+
+    // Test again after 10 seconds
+    setTimeout(async () => {
+        console.log('\n🔄 Re-checking for open files...');
+        await monitor.testCurrentlyOpen();
+    }, 10000);
+
+    // Graceful shutdown
+    process.on('SIGINT', () => {
+        monitor.stop();
+        console.log('\n👋 Monitor stopped. Goodbye!');
+        process.exit(0);
+    });
+}
+
+if (require.main === module) {
+    main().catch(error => {
+        console.error('❌ Fatal error:', error);
+        process.exit(1);
+    });
+}
