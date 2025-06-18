@@ -2,19 +2,36 @@
   "name": "insightmint-electron",
   "version": "1.0.0",
   "description": "InsightMint desktop agent: auto-summarize Word & PDF files on open",
-  "author": "Your Name insightmint.ultimeet.io",
+  "author": "InsightMint Team <contact@insightmint.io>",
+  "homepage": "https://insightmint.ultimeet.io",
   "main": "main.js",
+  "private": true,
   "scripts": {
     "start": "electron .",
+    "dev": "concurrently \"npm run api\" \"npm run start\" --kill-others --prefix-colors cyan,yellow",
+    "dev-simple": "concurrently \"npm run api\" \"npm run start-simple\" --kill-others",
+    "start-simple": "NODE_ENV=development electron .",
     "api": "node mock-api-server.js",
-    "dev": "concurrently \"npm run api\" \"npm run start\"",
-    "dev-simple": "concurrently \"npm run api\" \"npm run start-simple\"",
+    "api-dev": "NODE_ENV=development nodemon mock-api-server.js",
+    "test": "npm run test-monitor",
+    "test-monitor": "node -e \"const monitor = require('./src/FileAccessMonitor'); const m = new monitor(); m.testCurrentlyOpen().then(() => process.exit(0));\"",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
-    "postinstall": "node install-associations.js"
+    "dist-all": "electron-builder -mwl",
+    "dist-win": "electron-builder --win",
+    "dist-mac": "electron-builder --mac",
+    "dist-linux": "electron-builder --linux",
+    "clean": "rimraf dist build",
+    "postinstall": "node scripts/install-associations.js",
+    "lint": "eslint . --ext .js --fix",
+    "format": "prettier --write .",
+    "logs": "node -e \"console.log(require('./src/logger').logger.getStats())\"",
+    "cleanup-logs": "node -e \"require('./src/logger').logger.cleanup()\"",
+    "check-health": "curl http://localhost:8000/health || echo 'API server not running'",
+    "rebuild": "npm run clean && npm install && npm run dist"
   },
   "dependencies": {
-    "axios": "^1.4.0",
+    "axios": "^1.6.0",
     "chokidar": "^3.6.0",
     "electron-store": "^8.1.0",
     "express": "^4.21.2",
@@ -24,15 +41,36 @@
   "devDependencies": {
     "concurrently": "^8.2.2",
     "electron": "^26.0.0",
-    "electron-builder": "^23.6.0"
+    "electron-builder": "^23.6.0",
+    "nodemon": "^3.0.0",
+    "eslint": "^8.50.0",
+    "prettier": "^3.0.0",
+    "rimraf": "^5.0.0"
   },
   "build": {
     "appId": "com.insightmint.app",
     "productName": "InsightMint",
+    "copyright": "Copyright © 2024 InsightMint",
     "icon": "assets/icon",
     "files": [
-      "**/*"
+      "**/*",
+      "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
+      "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
+      "!**/node_modules/*.d.ts",
+      "!**/node_modules/.bin",
+      "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}",
+      "!.editorconfig",
+      "!**/._*",
+      "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}",
+      "!**/{__pycache__,thumbs.db,.flowconfig,.idea,.vs,.nyc_output}",
+      "!**/{appveyor.yml,.travis.yml,circle.yml}",
+      "!**/{npm-debug.log,yarn.lock,.yarn-integrity,.yarn-metadata.json}",
+      "!docs/**/*",
+      "!test/**/*"
     ],
+    "directories": {
+      "output": "dist"
+    },
     "fileAssociations": [
       {
         "ext": "pdf",
@@ -67,6 +105,16 @@
     "mac": {
       "icon": "assets/icon.icns",
       "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["x64", "arm64"]
+        }
+      ],
       "extendInfo": {
         "CFBundleDocumentTypes": [
           {
@@ -101,13 +149,24 @@
               "insightmint"
             ]
           }
-        ]
+        ],
+        "NSUserNotificationAlertStyle": "banner"
       }
     },
     "win": {
       "icon": "assets/icon.ico",
-      "target": "nsis",
-      "requestedExecutionLevel": "asInvoker"
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64", "ia32"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "requestedExecutionLevel": "asInvoker",
+      "publisherName": "InsightMint"
     },
     "nsis": {
       "oneClick": false,
@@ -115,17 +174,67 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "InsightMint",
-      "include": "installer.nsh"
+      "include": "scripts/installer.nsh",
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.${ext}"
     },
     "linux": {
       "icon": "assets/icon.png",
       "category": "Office",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": ["x64"]
+        },
+        {
+          "target": "deb",
+          "arch": ["x64"]
+        },
+        {
+          "target": "rpm",
+          "arch": ["x64"]
+        }
+      ],
       "desktop": {
         "Name": "InsightMint",
         "Comment": "Document Summary Assistant",
-        "Keywords": "pdf;doc;docx;summary;ai;",
-        "MimeType": "application/pdf;application/vnd.openxmlformats-officedocument.wordprocessingml.document;application/msword;"
+        "Keywords": "pdf;doc;docx;summary;ai;document;",
+        "MimeType": "application/pdf;application/vnd.openxmlformats-officedocument.wordprocessingml.document;application/msword;",
+        "StartupNotify": "true"
       }
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "insightmint",
+      "repo": "insightmint-desktop"
     }
+  },
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=8.0.0"
+  },
+  "keywords": [
+    "pdf",
+    "word",
+    "document",
+    "summary",
+    "ai",
+    "electron",
+    "desktop",
+    "productivity"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/insightmint/insightmint-desktop.git"
+  },
+  "bugs": {
+    "url": "https://github.com/insightmint/insightmint-desktop/issues"
   }
 }
